@@ -169,9 +169,10 @@ promise that every returned Go value is deeply immutable.
   mutate toolkit-owned request state in a way that affects another call.
 - `llmadapter.ValueDetailed` preserves available response evidence on call and
   decode errors and clones `Execution.Usage` before publication.
-- Provider adapters own `ProviderDetails` cloning. Details must be a non-nil,
-  isolated typed value whose provider identity matches neutral execution
-  evidence; they must not alias mutable transport or SDK state.
+- Provider adapters own `ProviderDetails` cloning. When details are provided,
+  they must be an isolated, non-nil typed value whose provider identity matches
+  neutral execution evidence; they must not alias mutable transport or SDK
+  state.
 - `ValueResult.Value`, `settle.Result.Output`, attempt candidates, and
   `llmstep.Result.Output` follow ordinary Go value semantics. Maps, slices,
   pointers, and custom mutable fields are not generically deep-copied.
