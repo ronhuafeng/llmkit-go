@@ -81,10 +81,25 @@ go mod tidy
 go test ./...
 go run .
 
-if go list -m all | grep -Eiq '(^|/)(codexsdk-go|llmcaller-[^[:space:]]*)'; then
-  echo "provider SDK dependency detected in clean consumer module graph" >&2
-  exit 1
-fi
+while read -r dependency _; do
+  case "$dependency" in
+    example.com/llmkit-clean-consumer | \
+      github.com/ronhuafeng/llmkit-go | \
+      github.com/dlclark/regexp2 | \
+      github.com/google/go-cmp | \
+      github.com/google/jsonschema-go | \
+      github.com/santhosh-tekuri/jsonschema/v6 | \
+      golang.org/x/mod | \
+      golang.org/x/sys | \
+      golang.org/x/tools | \
+      golang.org/x/text)
+      ;;
+    *)
+      echo "unreviewed dependency in clean consumer module graph: $dependency" >&2
+      exit 1
+      ;;
+  esac
+done < <(go list -m all)
 
 if [[ "$mode" == version ]]; then
   go list -m -json "$module" > module.json
