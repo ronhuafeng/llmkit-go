@@ -20,6 +20,7 @@ func TestSchemaJSONForIsDeterministicForRepresentativeTypes(t *testing.T) {
 		{name: "nested slices", generate: SchemaJSONFor[benchmarkNested]},
 		{name: "nullable pointer heavy", generate: SchemaJSONFor[benchmarkNullable]},
 		{name: "maps and raw message", generate: SchemaJSONFor[benchmarkMapRaw]},
+		{name: "realistic code review", generate: SchemaJSONFor[benchmarkReviewReport]},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -43,6 +44,7 @@ func TestSchemaJSONForIsDeterministicForRepresentativeTypes(t *testing.T) {
 func TestReflectTypeCacheKeyCharacteristics(t *testing.T) {
 	type named benchmarkSmall
 	type alias = benchmarkSmall
+	type genericStringAlias = benchmarkGeneric[string]
 
 	smallType := reflect.TypeFor[benchmarkSmall]()
 	if got := reflect.TypeFor[alias](); got != smallType {
@@ -59,6 +61,13 @@ func TestReflectTypeCacheKeyCharacteristics(t *testing.T) {
 		Score int    `json:"score"`
 	}](); got == smallType {
 		t.Fatalf("anonymous type unexpectedly shares named key %v", got)
+	}
+	genericType := reflect.TypeFor[benchmarkGeneric[string]]()
+	if got := reflect.TypeFor[genericStringAlias](); got != genericType {
+		t.Fatalf("instantiated generic alias type = %v, want canonical %v", got, genericType)
+	}
+	if got := reflect.TypeFor[benchmarkGeneric[int]](); got == genericType {
+		t.Fatalf("different generic instantiations unexpectedly share key %v", got)
 	}
 }
 
@@ -90,6 +99,26 @@ type benchmarkRecursive struct {
 	Children []benchmarkRecursive `json:"children,omitempty"`
 }
 
+type benchmarkGeneric[T any] struct {
+	Items []T `json:"items"`
+}
+
+type benchmarkReviewFinding struct {
+	File       string   `json:"file"`
+	Line       int      `json:"line"`
+	Severity   string   `json:"severity"`
+	Summary    string   `json:"summary"`
+	Evidence   []string `json:"evidence"`
+	Suggestion *string  `json:"suggestion,omitempty"`
+}
+
+type benchmarkReviewReport struct {
+	Summary  string                   `json:"summary"`
+	Findings []benchmarkReviewFinding `json:"findings"`
+	Metrics  map[string]int           `json:"metrics"`
+	Raw      json.RawMessage          `json:"raw,omitempty"`
+}
+
 var (
 	benchmarkValueSink  any
 	benchmarkBytesSink  json.RawMessage
@@ -103,6 +132,20 @@ func BenchmarkSchemaPipeline(b *testing.B) {
 	benchmarkPipeline[benchmarkNested](b, "nested-slices", []byte(`{"title":"batch","items":[{"name":"a","score":1},{"name":"b","score":2}]}`))
 	benchmarkPipeline[benchmarkNullable](b, "nullable-pointer-heavy", []byte(`{"name":"sample","count":3,"active":true,"tags":["a",null],"meta":{"owner":"team","note":null}}`))
 	benchmarkPipeline[benchmarkMapRaw](b, "maps-raw-message", []byte(`{"labels":{"a":1,"b":2},"evidence":{"source":"synthetic","ok":true}}`))
+	benchmarkPipeline[benchmarkReviewReport](b, "realistic-code-review", benchmarkReviewFixture())
+}
+
+func benchmarkReviewFixture() []byte {
+	return []byte(`{
+		"summary":"Review of a provider-neutral Go change with compatibility and concurrency checks.",
+		"findings":[
+			{"file":"llmschema/schema.go","line":56,"severity":"high","summary":"Repeated schema compilation dominates typed decode.","evidence":["profile: compile","benchmark: nested"],"suggestion":"Measure before changing production behavior."},
+			{"file":"llmadapter/adapter.go","line":103,"severity":"medium","summary":"Preserve provider-neutral ownership semantics.","evidence":["contract test","race test"]},
+			{"file":"docs/release.md","line":67,"severity":"low","summary":"Keep race verification aligned with release guidance.","evidence":["CI job","release checklist"]}
+		],
+		"metrics":{"files":3,"tests":14,"allocations":1225},
+		"raw":{"reviewer":"synthetic-realistic","version":1}
+	}`)
 }
 
 func benchmarkPipeline[T any](b *testing.B, name string, data []byte) {
@@ -123,34 +166,54 @@ func benchmarkPipeline[T any](b *testing.B, name string, data []byte) {
 
 		b.Run("generate", func(b *testing.B) {
 			b.ReportAllocs()
+			var err error
 			for i := 0; i < b.N; i++ {
-				benchmarkBytesSink, benchmarkErrorSink = SchemaJSONFor[T]()
+				benchmarkBytesSink, err = SchemaJSONFor[T]()
+			}
+			if err != nil {
+				b.Fatal(err)
 			}
 		})
 		b.Run("compile", func(b *testing.B) {
 			b.ReportAllocs()
+			var err error
 			for i := 0; i < b.N; i++ {
-				benchmarkSchemaSink, benchmarkErrorSink = compileBenchmarkSchema(schemaJSON)
+				benchmarkSchemaSink, err = compileBenchmarkSchema(schemaJSON)
+			}
+			if err != nil {
+				b.Fatal(err)
 			}
 		})
 		b.Run("validate", func(b *testing.B) {
 			b.ReportAllocs()
+			var err error
 			for i := 0; i < b.N; i++ {
-				benchmarkErrorSink = compiled.Validate(instance)
+				err = compiled.Validate(instance)
+			}
+			if err != nil {
+				b.Fatal(err)
 			}
 		})
 		b.Run("unmarshal", func(b *testing.B) {
 			b.ReportAllocs()
+			var err error
 			for i := 0; i < b.N; i++ {
 				var value T
-				benchmarkErrorSink = json.Unmarshal(data, &value)
+				err = json.Unmarshal(data, &value)
 				benchmarkValueSink = value
+			}
+			if err != nil {
+				b.Fatal(err)
 			}
 		})
 		b.Run("decode", func(b *testing.B) {
 			b.ReportAllocs()
+			var err error
 			for i := 0; i < b.N; i++ {
-				benchmarkValueSink, benchmarkErrorSink = Decode[T](data)
+				benchmarkValueSink, err = Decode[T](data)
+			}
+			if err != nil {
+				b.Fatal(err)
 			}
 		})
 	})
@@ -159,8 +222,12 @@ func benchmarkPipeline[T any](b *testing.B, name string, data []byte) {
 func BenchmarkDecodeRepeatedType(b *testing.B) {
 	data := []byte(`{"title":"batch","items":[{"name":"a","score":1},{"name":"b","score":2}]}`)
 	b.ReportAllocs()
+	var err error
 	for i := 0; i < b.N; i++ {
-		benchmarkValueSink, benchmarkErrorSink = Decode[benchmarkNested](data)
+		benchmarkValueSink, err = Decode[benchmarkNested](data)
+	}
+	if err != nil {
+		b.Fatal(err)
 	}
 }
 
