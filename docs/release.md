@@ -92,10 +92,19 @@ At and after v1.0.0:
    entry.
 
 Pushing a `v*` tag starts the `Tag verification` workflow. It resolves the tag
-from a fresh external module through normal module resolution, runs synthetic
-`ValueDetailed`, `settle.RunDetailed`, and `llmstep.RunDetailed` scenarios, and
-records the resolved module metadata, module sums, and exact tag commit as a
-workflow artifact. The workflow must pass before publishing the GitHub release.
+from `https://proxy.golang.org` with VCS fallback and workspaces disabled, using
+isolated module, build, and GOPATH caches. A bounded ten-minute propagation wait
+allows the public proxy to observe the immutable tag. The clean consumer then
+runs synthetic `ValueDetailed`, `settle.RunDetailed`, and `llmstep.RunDetailed`
+scenarios. Its artifact records the exact resolved version, module and go.mod
+sums, proxy origin commit, and tag commit. The workflow must pass before
+publishing the GitHub release.
+
+If the public proxy does not observe the tag before the propagation timeout,
+do not move, delete, or rebuild the tag. Leave the GitHub release unpublished,
+confirm the tag still names the intended commit, and rerun the same verification
+after propagation. If the tag itself is incorrect, publish the correction under
+a new patch or minor tag; an immutable release tag must never be repointed.
 
 ## Required branch protection checks
 
