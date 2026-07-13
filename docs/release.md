@@ -92,13 +92,17 @@ At and after v1.0.0:
    entry.
 
 Pushing a `v*` tag starts the `Tag verification` workflow. It resolves the tag
-from `https://proxy.golang.org` with VCS fallback and workspaces disabled, using
-isolated module, build, and GOPATH caches. A bounded ten-minute propagation wait
-allows the public proxy to observe the immutable tag. The clean consumer then
-runs synthetic `ValueDetailed`, `settle.RunDetailed`, and `llmstep.RunDetailed`
+exclusively from `https://proxy.golang.org`, with VCS access disabled
+(`GOVCS=*:off`) and workspaces disabled. The shell bootstrap isolates the
+helper's module, build, and GOPATH caches; the helper independently sanitizes
+every child command's Go environment.
+A bounded ten-minute propagation probe uses its own cache, then the clean
+consumer resolves the tag again with a distinct empty cache. The consumer runs
+synthetic `ValueDetailed`, `settle.RunDetailed`, and `llmstep.RunDetailed`
 scenarios. Its artifact records the exact resolved version, module and go.mod
 sums, proxy origin commit, and tag commit. The workflow must pass before
-publishing the GitHub release.
+publishing the GitHub release. Individual consumer commands have a ten-minute
+limit, and the complete verification job fails closed after 25 minutes.
 
 If the public proxy does not observe the tag before the propagation timeout,
 do not move, delete, or rebuild the tag. Leave the GitHub release unpublished,

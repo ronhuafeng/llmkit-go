@@ -12,6 +12,7 @@ jobs:
   clean-consumer:
     name: Tag clean consumer
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
         with:

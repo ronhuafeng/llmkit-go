@@ -38,4 +38,4 @@ go run ./internal/cmd/tagconsumer \
   -evidence "$workdir/tag-evidence.json" \
   -timeout 10m \
   -retry-interval 15s \
-  -command-timeout 5m
+  -command-timeout 10m

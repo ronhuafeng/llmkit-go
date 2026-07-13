@@ -70,6 +70,8 @@ type config struct {
 	commandTimeout     time.Duration
 }
 
+type commandFunction func(context.Context, time.Duration, string, []string, string, ...string) ([]byte, error)
+
 func main() {
 	var options config
 	flag.StringVar(&options.tag, "tag", "", "exact stable module tag to resolve")
@@ -79,7 +81,7 @@ func main() {
 	flag.StringVar(&options.evidencePath, "evidence", "tag-evidence.json", "evidence artifact path")
 	flag.DurationVar(&options.propagationTimeout, "timeout", 10*time.Minute, "maximum public proxy propagation wait")
 	flag.DurationVar(&options.retryInterval, "retry-interval", 15*time.Second, "public proxy retry interval")
-	flag.DurationVar(&options.commandTimeout, "command-timeout", 5*time.Minute, "maximum time for one external command")
+	flag.DurationVar(&options.commandTimeout, "command-timeout", 10*time.Minute, "maximum time for one external command")
 	flag.Parse()
 	if err := run(context.Background(), options); err != nil {
 		fmt.Fprintln(os.Stderr, "tag consumer gate:", err)
@@ -88,6 +90,10 @@ func main() {
 }
 
 func run(parent context.Context, options config) error {
+	return runWithCommand(parent, options, commandOutputBounded)
+}
+
+func runWithCommand(parent context.Context, options config, command commandFunction) error {
 	if !stableTagRE.MatchString(options.tag) {
 		return fmt.Errorf("tag %q is not an exact stable Go module version", options.tag)
 	}
@@ -106,15 +112,18 @@ func run(parent context.Context, options config) error {
 		}
 	}
 
-	environment := proxyEnvironment(options.workdir)
+	// The availability probe and the actual consumer intentionally use separate
+	// empty caches. A successful probe must not prefill the evidence-producing
+	// consumer's module state.
+	probeEnvironment := proxyEnvironment(filepath.Join(options.workdir, "probe-state"))
 	propagationContext, cancelPropagation := context.WithTimeout(parent, options.propagationTimeout)
 	var resolved moduleInfo
 	err := retryUntilAvailable(propagationContext, options.retryInterval, func() error {
-		output, commandErr := commandOutputBounded(
+		output, commandErr := command(
 			propagationContext,
 			options.commandTimeout,
 			options.repository,
-			environment,
+			probeEnvironment,
 			"go", "mod", "download", "-json", modulePath+"@"+options.tag,
 		)
 		if commandErr != nil {
@@ -139,16 +148,17 @@ func run(parent context.Context, options config) error {
 	}
 
 	consumerDir := filepath.Join(options.workdir, "consumer")
-	if _, err := commandOutputBounded(
+	consumerEnvironment := proxyEnvironment(filepath.Join(options.workdir, "consumer-state"))
+	if _, err := command(
 		parent,
 		options.commandTimeout,
 		options.repository,
-		environment,
+		consumerEnvironment,
 		"bash", filepath.Join(options.repository, "scripts", "ci", "verify-clean-consumer.sh"), "version", options.tag, consumerDir,
 	); err != nil {
 		return err
 	}
-	listed, err := commandOutputBounded(parent, options.commandTimeout, consumerDir, environment, "go", "list", "-m", "-json", modulePath)
+	listed, err := command(parent, options.commandTimeout, consumerDir, consumerEnvironment, "go", "list", "-m", "-json", modulePath)
 	if err != nil {
 		return err
 	}
