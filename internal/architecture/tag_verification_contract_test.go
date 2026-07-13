@@ -3,6 +3,7 @@ package architecture
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -10,6 +11,9 @@ import (
 func TestTagVerificationWorkflowUsesIsolatedProxyOnlyGate(t *testing.T) {
 	root := repoRoot(t)
 	workflow := readContractFile(t, filepath.Join(root, ".github", "workflows", "tag-verification.yml"))
+	if got := workflowPushTags(workflow); !reflect.DeepEqual(got, []string{"v*"}) {
+		t.Errorf("tag verification push tags = %v, want [v*]", got)
+	}
 	if got := workflowJobValue(workflow, "clean-consumer", "timeout-minutes"); got != "25" {
 		t.Errorf("tag verification job timeout-minutes = %q, want 25", got)
 	}
@@ -73,16 +77,27 @@ func TestTagVerificationWorkflowUsesIsolatedProxyOnlyGate(t *testing.T) {
 	}
 }
 
+func TestWorkflowPushTagsRejectsBranchDispatchAndRunTextDecoys(t *testing.T) {
+	fixture := `on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+jobs:
+  clean-consumer:
+    steps:
+      - run: echo 'push tags v*'
+`
+	if got := workflowPushTags(fixture); len(got) != 0 {
+		t.Fatalf("non-tag triggers satisfied tag contract: %v", got)
+	}
+}
+
 func workflowJobValue(workflow string, job string, key string) string {
-	inJob := false
-	for _, line := range strings.Split(workflow, "\n") {
+	for _, line := range workflowJobLines(workflow, job) {
 		trimmed := strings.TrimSpace(line)
 		indent := len(line) - len(strings.TrimLeft(line, " "))
-		if indent == 2 && strings.HasSuffix(trimmed, ":") {
-			inJob = strings.TrimSuffix(trimmed, ":") == job
-			continue
-		}
-		if !inJob || indent != 4 {
+		if indent != 4 {
 			continue
 		}
 		field, value, ok := strings.Cut(trimmed, ":")
@@ -118,7 +133,6 @@ type workflowStep struct {
 
 func workflowJobSteps(workflow string, job string) []workflowStep {
 	var steps []workflowStep
-	inJob := false
 	inSteps := false
 	inWith := false
 	inRun := false
@@ -129,21 +143,12 @@ func workflowJobSteps(workflow string, job string) []workflowStep {
 			current = nil
 		}
 	}
-	for _, line := range strings.Split(workflow, "\n") {
+	for _, line := range workflowJobLines(workflow, job) {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
 		indent := len(line) - len(strings.TrimLeft(line, " "))
-		if indent == 2 && strings.HasSuffix(trimmed, ":") {
-			flush()
-			inJob = strings.TrimSuffix(trimmed, ":") == job
-			inSteps = false
-			continue
-		}
-		if !inJob {
-			continue
-		}
 		if indent == 4 && trimmed == "steps:" {
 			inSteps = true
 			continue
@@ -183,6 +188,78 @@ func workflowJobSteps(workflow string, job string) []workflowStep {
 	}
 	flush()
 	return steps
+}
+
+// These contract tests intentionally share only YAML section-boundary
+// discovery. Trigger and step parsing stay explicit because they validate
+// different shapes; growing this into a partial general-purpose YAML parser
+// would make the release gate harder, not easier, to review.
+func workflowJobLines(workflow string, job string) []string {
+	var lines []string
+	inJob := false
+	for _, line := range strings.Split(workflow, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			if inJob {
+				lines = append(lines, line)
+			}
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if indent == 2 && strings.HasSuffix(trimmed, ":") {
+			if inJob {
+				break
+			}
+			inJob = strings.TrimSuffix(trimmed, ":") == job
+			continue
+		}
+		if inJob {
+			if indent <= 2 {
+				break
+			}
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+func workflowPushTags(workflow string) []string {
+	var tags []string
+	inOn := false
+	inPush := false
+	inTags := false
+	for _, line := range strings.Split(workflow, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if indent == 0 {
+			inOn = trimmed == "on:"
+			inPush = false
+			inTags = false
+			continue
+		}
+		if !inOn {
+			continue
+		}
+		if indent == 2 {
+			inPush = trimmed == "push:"
+			inTags = false
+			continue
+		}
+		if !inPush {
+			continue
+		}
+		if indent == 4 {
+			inTags = trimmed == "tags:"
+			continue
+		}
+		if inTags && indent == 6 && strings.HasPrefix(trimmed, "- ") {
+			tags = append(tags, strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")), `"'`))
+		}
+	}
+	return tags
 }
 
 func parseWorkflowStepField(step *workflowStep, field string) {
